@@ -174,7 +174,8 @@ func Capture(ctx context.Context, source string, capacity int64) (_ *Snapshot, e
 				if len(dirs)+len(snap.Files) >= maxEntries {
 					return nil, fmt.Errorf("source exceeds %d archive entries", maxEntries)
 				}
-				if err := tw.WriteHeader(&tar.Header{Name: parent + "/", Typeflag: tar.TypeDir, Mode: int64(d.Mode().Perm() | 0o070)}); err != nil {
+				// Keep new files in the shared group when Tasks use different primary groups
+				if err := tw.WriteHeader(&tar.Header{Name: parent + "/", Typeflag: tar.TypeDir, Mode: int64(d.Mode().Perm() | 0o2070)}); err != nil {
 					return nil, err
 				}
 				dirs[parent] = true

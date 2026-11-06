@@ -18,15 +18,20 @@ import (
 const uploaderImage = "docker.io/library/busybox:1.37.0@sha256:a7dbc319b1438115a207e11930dc4bb3e643dcb3ec0bdd694bb36cd8fad289ec"
 
 func uploaderPod(name, namespace, pvc string, contract *executionContract) *corev1.Pod {
+	security := &corev1.PodSecurityContext{RunAsNonRoot: ptr.To(true), RunAsGroup: ptr.To(contract.Group), FSGroup: ptr.To(contract.Group), SeccompProfile: &corev1.SeccompProfile{Type: corev1.SeccompProfileTypeRuntimeDefault}}
+	if !contract.OpenShift {
+		security.RunAsUser = ptr.To(defaultUser)
+	}
 	return &corev1.Pod{
 		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: namespace},
 		Spec: corev1.PodSpec{
+			ServiceAccountName:           "default",
 			RestartPolicy:                corev1.RestartPolicyNever,
 			ActiveDeadlineSeconds:        ptr.To(int64(300)),
 			AutomountServiceAccountToken: ptr.To(false),
 			NodeSelector:                 contract.NodeSelector,
 			Tolerations:                  contract.Tolerations,
-			SecurityContext:              &corev1.PodSecurityContext{RunAsNonRoot: ptr.To(true), RunAsUser: ptr.To(contract.Group), RunAsGroup: ptr.To(contract.Group), FSGroup: ptr.To(contract.Group), SeccompProfile: &corev1.SeccompProfile{Type: corev1.SeccompProfileTypeRuntimeDefault}},
+			SecurityContext:              security,
 			Containers: []corev1.Container{{
 				Name: "upload", Image: uploaderImage, Command: []string{"sleep", "300"},
 				SecurityContext: &corev1.SecurityContext{AllowPrivilegeEscalation: ptr.To(false), ReadOnlyRootFilesystem: ptr.To(true), Capabilities: &corev1.Capabilities{Drop: []corev1.Capability{"ALL"}}},
@@ -42,8 +47,9 @@ func uploaderPod(name, namespace, pvc string, contract *executionContract) *core
 }
 
 func (e *Execution) upload(ctx context.Context, pod *corev1.Pod, archive io.Reader) error {
+	// BusyBox tar ignores -p for non-root users, so creation modes must survive the umask
 	request := e.clients.Kube.CoreV1().RESTClient().Post().Namespace(pod.Namespace).Resource("pods").Name(pod.Name).SubResource("exec").VersionedParams(&corev1.PodExecOptions{
-		Container: "upload", Command: []string{"tar", "-xmpf", "-", "-C", "/source", "--no-same-owner"}, Stdin: true, Stdout: true, Stderr: true, TTY: false,
+		Container: "upload", Command: []string{"sh", "-c", "umask 0000; mkdir /source/worktree && chmod 2770 /source/worktree && tar -xmf - -C /source/worktree --no-same-owner"}, Stdin: true, Stdout: true, Stderr: true, TTY: false,
 	}, scheme.ParameterCodec)
 	websocket, err := remotecommand.NewWebSocketExecutor(e.config, http.MethodGet, request.URL().String())
 	if err != nil {

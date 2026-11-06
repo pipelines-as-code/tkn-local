@@ -102,7 +102,7 @@ func TestExecutionLifecycle(t *testing.T) {
 			})
 			kube.PrependReactor("create", "persistentvolumeclaims", func(action ktesting.Action) (bool, runtime.Object, error) {
 				if tt.pvcError {
-					return true, nil, fmt.Errorf("PVC creation failed")
+					return true, &corev1.PersistentVolumeClaim{}, fmt.Errorf("PVC creation failed")
 				}
 				typedAction, ok := action.(ktesting.CreateAction)
 				assert.Assert(t, ok)
@@ -246,6 +246,31 @@ func TestCleanupUIDPreconditions(t *testing.T) {
 	assert.NilError(t, err)
 }
 
+func TestCleanupRetainedTaskMetadata(t *testing.T) {
+	for _, runningPod := range []bool{false, true} {
+		t.Run(fmt.Sprintf("running Pod %t", runningPod), func(t *testing.T) {
+			e, tekton, kube := testExecution(t)
+			e.pipelineRun.UID = "run-uid"
+			task := &tektonv1.TaskRun{ObjectMeta: metav1.ObjectMeta{Name: "task", Namespace: "dev", Labels: map[string]string{"tekton.dev/pipelineRun": e.pipelineRun.Name}, OwnerReferences: []metav1.OwnerReference{{UID: e.pipelineRun.UID}}, Finalizers: []string{"results.tekton.dev/taskrun"}}}
+			task.Status.SetConditions([]apis.Condition{{Type: apis.ConditionSucceeded, Status: corev1.ConditionTrue}})
+			_, err := tekton.TektonV1().TaskRuns("dev").Create(t.Context(), task, metav1.CreateOptions{})
+			assert.NilError(t, err)
+			if runningPod {
+				_, err = kube.CoreV1().Pods("dev").Create(t.Context(), &corev1.Pod{ObjectMeta: metav1.ObjectMeta{Name: "task-pod", Namespace: "dev", Labels: task.Labels}, Status: corev1.PodStatus{Phase: corev1.PodRunning}}, metav1.CreateOptions{})
+				assert.NilError(t, err)
+			}
+			ctx, cancel := context.WithTimeout(t.Context(), 100*time.Millisecond)
+			defer cancel()
+			err = e.waitTaskPods(ctx, e.pipelineRun, true)
+			if runningPod {
+				assert.ErrorContains(t, err, "context deadline exceeded")
+			} else {
+				assert.NilError(t, err)
+			}
+		})
+	}
+}
+
 func TestUploaderAdmission(t *testing.T) {
 	tests := []struct {
 		name    string
@@ -268,13 +293,19 @@ func TestUploaderAdmission(t *testing.T) {
 		{name: "privileged", wantErr: true, mutate: func(p *corev1.Pod) { p.Spec.Containers[0].SecurityContext.Privileged = ptr.To(true) }},
 		{name: "different fsGroup", wantErr: true, mutate: func(p *corev1.Pod) { p.Spec.SecurityContext.FSGroup = ptr.To(int64(1234)) }},
 		{name: "service account token", wantErr: true, mutate: func(p *corev1.Pod) { p.Spec.AutomountServiceAccountToken = ptr.To(true) }},
+		{name: "memory pressure default", mutate: func(p *corev1.Pod) {
+			p.Spec.Tolerations = []corev1.Toleration{{Key: "node.kubernetes.io/memory-pressure", Operator: corev1.TolerationOpExists, Effect: corev1.TaintEffectNoSchedule}}
+		}},
+		{name: "arbitrary placement", wantErr: true, mutate: func(p *corev1.Pod) {
+			p.Spec.Tolerations = []corev1.Toleration{{Operator: corev1.TolerationOpExists}}
+		}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			requested := uploaderPod("upload", "dev", "source", &executionContract{Group: 65532})
 			actual := requested.DeepCopy()
 			tt.mutate(actual)
-			err := validateUploader(actual, requested)
+			err := validateUploader(actual, requested, securityDefaults{})
 			if tt.wantErr {
 				assert.Assert(t, err != nil)
 			} else {

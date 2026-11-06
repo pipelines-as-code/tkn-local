@@ -154,6 +154,9 @@ func TestCapture(t *testing.T) {
 				assert.Assert(t, !hasGitComponent(header.Name))
 				assert.Equal(t, 0, header.Uid)
 				assert.Equal(t, 0, header.Gid)
+				if header.Typeflag == tar.TypeDir {
+					assert.Assert(t, header.Mode&0o2070 == 0o2070)
+				}
 				if header.Name == "dir/script" {
 					foundExecutable = true
 					assert.Equal(t, int64(0o770), header.Mode)

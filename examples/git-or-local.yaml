@@ -1,0 +1,86 @@
+apiVersion: tekton.dev/v1
+kind: PipelineRun
+metadata:
+  generateName: git-or-local-
+spec:
+  taskRunTemplate:
+    serviceAccountName: default
+  workspaces:
+    - name: source
+      volumeClaimTemplate:
+        spec:
+          accessModes:
+            - ReadWriteOnce
+          resources:
+            requests:
+              storage: 1Gi
+  pipelineSpec:
+    params:
+      - name: local
+        type: string
+        default: "false"
+      - name: url
+        type: string
+        default: https://github.com/pipelines-as-code/tkn-local.git
+      - name: revision
+        type: string
+        default: main
+    workspaces:
+      - name: source
+    tasks:
+      - name: git-clone
+        when:
+          - input: $(params.local)
+            operator: in
+            values:
+              - "false"
+        params:
+          - name: url
+            value: $(params.url)
+          - name: revision
+            value: $(params.revision)
+        workspaces:
+          - name: source
+            workspace: source
+        taskSpec:
+          params:
+            - name: url
+              type: string
+            - name: revision
+              type: string
+          workspaces:
+            - name: source
+          steps:
+            - name: clone
+              image: docker.io/alpine/git:2.49.1@sha256:c0280cf9572316299b08544065d3bf35db65043d5e3963982ec50647d2746e26
+              workingDir: $(workspaces.source.path)
+              env:
+                - name: HOME
+                  value: /tmp
+                - name: URL
+                  value: $(params.url)
+                - name: REVISION
+                  value: $(params.revision)
+              script: |
+                #!/bin/sh
+                set -eu
+                git init .
+                git fetch --depth=1 -- "$URL" "$REVISION"
+                git checkout --detach FETCH_HEAD
+      - name: inspect-source
+        runAfter:
+          - git-clone
+        workspaces:
+          - name: source
+            workspace: source
+        taskSpec:
+          workspaces:
+            - name: source
+          steps:
+            - name: inspect
+              image: docker.io/library/busybox:1.37.0@sha256:a7dbc319b1438115a207e11930dc4bb3e643dcb3ec0bdd694bb36cd8fad289ec
+              workingDir: $(workspaces.source.path)
+              script: |
+                #!/bin/sh
+                set -eu
+                ls -la

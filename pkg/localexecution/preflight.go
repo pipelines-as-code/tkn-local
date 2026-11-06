@@ -47,6 +47,7 @@ type Execution struct {
 	source       *Snapshot
 	prepared     *Prepared
 	contract     *executionContract
+	security     securityDefaults
 	pipelineRun  *tektonv1.PipelineRun
 	pvc          *corev1.PersistentVolumeClaim
 	pod          *corev1.Pod
@@ -90,8 +91,15 @@ func Prepare(ctx context.Context, clients *cluster.Clients, streams *iostreams.I
 	if err := checkCoscheduling(ctx, clients, options.TektonNamespace); err != nil {
 		return nil, err
 	}
+	security, err := loadSecurityDefaults(ctx, clients, options.Namespace)
+	if err != nil {
+		return nil, err
+	}
 	id := "tkn-local-" + strings.ToLower(rand.Text()[:16])
 	pr := prepared.PipelineRun.DeepCopy()
+	if err := applySecurityDefaults(pr, prepared.Workspace, security); err != nil {
+		return nil, err
+	}
 	pr.Name = id
 	pr.GenerateName = ""
 	pr.Namespace = options.Namespace
@@ -116,7 +124,7 @@ func Prepare(ctx context.Context, clients *cluster.Clients, streams *iostreams.I
 		pr.Spec.Timeouts.Pipeline = &metav1.Duration{Duration: options.Timeout}
 	}
 
-	binding := tektonv1.WorkspaceBinding{Name: prepared.Workspace, PersistentVolumeClaim: &corev1.PersistentVolumeClaimVolumeSource{ClaimName: id + "-source"}}
+	binding := tektonv1.WorkspaceBinding{Name: prepared.Workspace, SubPath: "worktree", PersistentVolumeClaim: &corev1.PersistentVolumeClaimVolumeSource{ClaimName: id + "-source"}}
 	found := false
 	for i, w := range pr.Spec.Workspaces {
 		if w.Name == prepared.Workspace {
@@ -147,6 +155,7 @@ func Prepare(ctx context.Context, clients *cluster.Clients, streams *iostreams.I
 	if err != nil {
 		return nil, err
 	}
+	contract.OpenShift = security.OpenShift
 	for _, identity := range contract.Identities {
 		if _, err := clients.Kube.CoreV1().ServiceAccounts(options.Namespace).Get(ctx, identity.ServiceAccount, metav1.GetOptions{}); err != nil {
 			return nil, fmt.Errorf("task %s service account %s: %w", identity.Task, identity.ServiceAccount, err)
@@ -161,15 +170,20 @@ func Prepare(ctx context.Context, clients *cluster.Clients, streams *iostreams.I
 		return nil, fmt.Errorf("admission changed the fresh RWO filesystem PVC contract")
 	}
 	pod := uploaderPod(id+"-upload", options.Namespace, pvc.Name, contract)
+	uploaderAccount, err := clients.Kube.CoreV1().ServiceAccounts(options.Namespace).Get(ctx, pod.Spec.ServiceAccountName, metav1.GetOptions{})
+	if err != nil {
+		return nil, fmt.Errorf("uploader service account: %w", err)
+	}
+	pod.Spec.ImagePullSecrets = uploaderAccount.ImagePullSecrets
 	pod.Labels = map[string]string{RunIDLabel: id}
 	admittedPod, err := clients.Kube.CoreV1().Pods(options.Namespace).Create(ctx, pod, metav1.CreateOptions{DryRun: []string{metav1.DryRunAll}})
 	if err != nil {
 		return nil, fmt.Errorf("dry-run restricted uploader: %w", err)
 	}
-	if err := validateUploader(admittedPod, pod); err != nil {
+	if err := validateUploader(admittedPod, pod, security); err != nil {
 		return nil, err
 	}
-	execution := &Execution{clients: clients, config: config, streams: streams, options: options, source: source, prepared: prepared, contract: contract, pipelineRun: admitted, pvc: admittedPVC, pod: admittedPod, tkn: binary}
+	execution := &Execution{clients: clients, config: config, streams: streams, options: options, source: source, prepared: prepared, contract: contract, security: security, pipelineRun: admitted, pvc: admittedPVC, pod: admittedPod, tkn: binary}
 	execution.uploadSource = execution.upload
 	execution.followLogs = execution.logs
 	return execution, nil
@@ -180,9 +194,10 @@ func checkAccess(ctx context.Context, clients *cluster.Clients, namespace string
 		group, resource string
 		verbs           []string
 	}{
-		{"tekton.dev", "pipelineruns", []string{"create", "get", "update", "delete"}},
-		{"tekton.dev", "taskruns", []string{"list"}},
-		{"", "pods", []string{"create", "get", "list", "delete"}},
+		{"tekton.dev", "pipelineruns", []string{"create", "get", "list", "watch", "update", "delete"}},
+		{"tekton.dev", "pipelineruns/finalizers", []string{"update"}},
+		{"tekton.dev", "taskruns", []string{"get", "list", "watch"}},
+		{"", "pods", []string{"create", "get", "list", "watch", "delete"}},
 		{"", "persistentvolumeclaims", []string{"create", "get", "delete"}},
 		{"", "pods/exec", []string{"get", "create"}},
 		{"", "pods/log", []string{"get"}},
@@ -252,8 +267,17 @@ func checkCoscheduling(ctx context.Context, clients *cluster.Clients, namespace 
 	}
 }
 
-func validateUploader(admitted, requested *corev1.Pod) error {
+func validateUploader(admitted, requested *corev1.Pod, security securityDefaults) error {
 	expected := requested.DeepCopy()
+	if admitted.Spec.SecurityContext == nil || expected.Spec.SecurityContext == nil {
+		return fmt.Errorf("uploader requires a non-root Pod security context")
+	}
+	if err := normalizePodSecurity(admitted.Spec.SecurityContext, expected.Spec.SecurityContext, security); err != nil {
+		return err
+	}
+	if expected.Spec.HostUsers == nil && admitted.Spec.HostUsers != nil && !*admitted.Spec.HostUsers {
+		expected.Spec.HostUsers = admitted.Spec.HostUsers
+	}
 	if expected.Spec.DNSPolicy == "" && admitted.Spec.DNSPolicy == corev1.DNSClusterFirst {
 		expected.Spec.DNSPolicy = admitted.Spec.DNSPolicy
 	}
@@ -278,6 +302,12 @@ func validateUploader(admitted, requested *corev1.Pod) error {
 		}
 		container := &expected.Spec.Containers[i]
 		actual := admitted.Spec.Containers[i]
+		if container.SecurityContext == nil || actual.SecurityContext == nil {
+			return fmt.Errorf("uploader container security context was removed")
+		}
+		if err := normalizeContainerSecurity(actual.SecurityContext, container.SecurityContext, security); err != nil {
+			return err
+		}
 		if container.ImagePullPolicy == "" && actual.ImagePullPolicy == corev1.PullIfNotPresent {
 			container.ImagePullPolicy = actual.ImagePullPolicy
 		}
@@ -288,8 +318,9 @@ func validateUploader(admitted, requested *corev1.Pod) error {
 			container.TerminationMessagePolicy = actual.TerminationMessagePolicy
 		}
 	}
-	expected.Spec.ServiceAccountName = admitted.Spec.ServiceAccountName
-	expected.Spec.DeprecatedServiceAccount = admitted.Spec.DeprecatedServiceAccount
+	if admitted.Spec.DeprecatedServiceAccount == requested.Spec.ServiceAccountName {
+		expected.Spec.DeprecatedServiceAccount = admitted.Spec.DeprecatedServiceAccount
+	}
 	for _, toleration := range admitted.Spec.Tolerations {
 		found := false
 		for _, authored := range requested.Spec.Tolerations {
@@ -298,8 +329,9 @@ func validateUploader(admitted, requested *corev1.Pod) error {
 			}
 		}
 		standard := toleration.Operator == corev1.TolerationOpExists && toleration.Effect == corev1.TaintEffectNoExecute && (toleration.Key == "node.kubernetes.io/not-ready" || toleration.Key == "node.kubernetes.io/unreachable") && toleration.TolerationSeconds != nil && *toleration.TolerationSeconds == 300
+		standard = standard || toleration == (corev1.Toleration{Key: "node.kubernetes.io/memory-pressure", Operator: corev1.TolerationOpExists, Effect: corev1.TaintEffectNoSchedule})
 		if !found && !standard {
-			return fmt.Errorf("admission introduced unsupported uploader placement")
+			return fmt.Errorf("admission introduced unsupported uploader toleration: %+v", toleration)
 		}
 	}
 	expected.Spec.Tolerations = admitted.Spec.Tolerations

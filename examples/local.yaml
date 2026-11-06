@@ -4,9 +4,7 @@ metadata:
   generateName: local-example-
 spec:
   taskRunTemplate:
-    podTemplate:
-      securityContext:
-        fsGroup: 65532
+    serviceAccountName: default
   pipelineSpec:
     params:
       - name: message

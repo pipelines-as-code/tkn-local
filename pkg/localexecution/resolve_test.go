@@ -82,6 +82,7 @@ func TestResolve(t *testing.T) {
 			assert.Equal(t, "source", prepared.Workspace)
 			assert.Equal(t, "dev", prepared.PipelineRun.Namespace)
 			assert.Assert(t, len(prepared.Definitions) > 0)
+			assert.NilError(t, applySecurityDefaults(prepared.PipelineRun, prepared.Workspace, securityDefaults{Group: defaultUser}))
 			contract, err := admittedContract(prepared.PipelineRun, prepared.Workspace)
 			assert.NilError(t, err)
 			assert.Equal(t, int64(65532), contract.Group)

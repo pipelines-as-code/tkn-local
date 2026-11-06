@@ -41,12 +41,12 @@ func (e *Execution) Run(ctx context.Context) (resultErr error) {
 	defer cancelPreparation()
 	desired := e.pipelineRun.DeepCopy()
 	clearIdentity(&desired.ObjectMeta)
-	var err error
-	createdPR, err = e.clients.Tekton.TektonV1().PipelineRuns(e.options.Namespace).Create(preparationCtx, desired, metav1.CreateOptions{})
+	pr, err := e.clients.Tekton.TektonV1().PipelineRuns(e.options.Namespace).Create(preparationCtx, desired, metav1.CreateOptions{})
 	if err != nil {
 		e.recovery()
 		return fmt.Errorf("create pending PipelineRun: %w", err)
 	}
+	createdPR = pr
 	if createdPR.UID == "" {
 		return fmt.Errorf("API server returned a PipelineRun without a UID")
 	}
@@ -61,22 +61,24 @@ func (e *Execution) Run(ctx context.Context) (resultErr error) {
 	pvc := e.pvc.DeepCopy()
 	clearIdentity(&pvc.ObjectMeta)
 	pvc.OwnerReferences = []metav1.OwnerReference{owner}
-	createdPVC, err = e.clients.Kube.CoreV1().PersistentVolumeClaims(e.options.Namespace).Create(preparationCtx, pvc, metav1.CreateOptions{})
+	claim, err := e.clients.Kube.CoreV1().PersistentVolumeClaims(e.options.Namespace).Create(preparationCtx, pvc, metav1.CreateOptions{})
 	if err != nil {
 		return fmt.Errorf("create fresh source PVC: %w", err)
 	}
+	createdPVC = claim
 	if !reflect.DeepEqual(createdPVC.Spec, e.pvc.Spec) {
 		return fmt.Errorf("admission changed the PVC after preview")
 	}
 	pod := e.pod.DeepCopy()
 	clearIdentity(&pod.ObjectMeta)
 	pod.OwnerReferences = []metav1.OwnerReference{owner}
-	createdPod, err = e.clients.Kube.CoreV1().Pods(e.options.Namespace).Create(preparationCtx, pod, metav1.CreateOptions{})
+	uploader, err := e.clients.Kube.CoreV1().Pods(e.options.Namespace).Create(preparationCtx, pod, metav1.CreateOptions{})
 	if err != nil {
 		return fmt.Errorf("create uploader Pod: %w", err)
 	}
-	if !reflect.DeepEqual(createdPod.Spec, e.pod.Spec) {
-		return fmt.Errorf("admission changed uploader security or placement after preview; source was not uploaded")
+	createdPod = uploader
+	if err := validateUploader(createdPod, e.pod, e.security); err != nil {
+		return fmt.Errorf("admission changed uploader after preview; source was not uploaded: %w", err)
 	}
 	if err := e.waitUploader(preparationCtx, createdPod, createdPVC); err != nil {
 		return err
@@ -88,8 +90,11 @@ func (e *Execution) Run(ctx context.Context) (resultErr error) {
 	expectedPod := e.pod.DeepCopy()
 	currentPod.Spec.NodeName = ""
 	expectedPod.Spec.NodeName = ""
-	if currentPod.UID != createdPod.UID || !reflect.DeepEqual(currentPod.Spec, expectedPod.Spec) {
+	if currentPod.UID != createdPod.UID {
 		return fmt.Errorf("uploader changed before upload")
+	}
+	if err := validateUploader(currentPod, expectedPod, e.security); err != nil {
+		return fmt.Errorf("uploader changed before upload: %w", err)
 	}
 	archive, err := e.source.Archive()
 	if err != nil {
@@ -220,7 +225,15 @@ func (e *Execution) waitPipelineRun(ctx context.Context, pr *tektonv1.PipelineRu
 		if current.UID != pr.UID {
 			return false, fmt.Errorf("PipelineRun was replaced")
 		}
+		if err := e.inspectTaskPods(ctx, current); err != nil {
+			return false, err
+		}
 		condition := current.Status.GetCondition(apis.ConditionSucceeded)
+		if condition != nil && condition.Status == corev1.ConditionFalse {
+			if err := e.taskAdmissionFailure(ctx, current); err != nil {
+				return false, err
+			}
+		}
 		if condition != nil && (condition.Status == corev1.ConditionTrue || condition.Status == corev1.ConditionFalse) {
 			terminal = current
 			return true, nil
@@ -377,7 +390,8 @@ func (e *Execution) waitTaskPods(ctx context.Context, pr *tektonv1.PipelineRun, 
 		remaining := false
 		for _, tr := range runs.Items {
 			if ownedBy(tr.OwnerReferences, pr.UID) {
-				if deleted {
+				// Results may retain terminal TaskRuns after their Pods have been removed
+				if deleted && !tr.IsDone() {
 					remaining = true
 				}
 			}

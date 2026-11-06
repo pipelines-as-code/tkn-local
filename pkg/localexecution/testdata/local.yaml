@@ -5,20 +5,6 @@ metadata:
 spec:
   taskRunTemplate:
     serviceAccountName: default
-    podTemplate:
-      securityContext:
-        runAsNonRoot: true
-        runAsUser: 65532
-        runAsGroup: 65532
-        fsGroup: 65532
-  taskRunSpecs:
-    - pipelineTaskName: verify-shared-source
-      podTemplate:
-        securityContext:
-          runAsNonRoot: true
-          runAsUser: 65533
-          runAsGroup: 65532
-          fsGroup: 65532
   pipelineSpec:
     params:
       - name: expected-tracked
@@ -62,7 +48,9 @@ spec:
                 test -x local-executable.sh
                 ./local-executable.sh
                 umask 0002
-                printf 'shared source\n' > local-marker.txt
+                grep -q '^nested source$' nested/input.txt
+                printf 'shared root\n' > local-marker.txt
+                printf 'shared source\n' > nested/local-marker.txt
       - name: verify-shared-source
         runAfter:
           - inspect-source
@@ -85,8 +73,10 @@ spec:
                 #!/bin/sh
                 set -eu
                 cd "$(workspaces.source.path)"
-                grep -q '^shared source$' local-marker.txt
+                grep -q '^shared root$' local-marker.txt
                 printf 'second UID wrote successfully\n' >> local-marker.txt
+                grep -q '^shared source$' nested/local-marker.txt
+                printf 'second UID wrote successfully\n' >> nested/local-marker.txt
                 printf 'LOCAL_SOURCE_VERIFIED\n'
                 if test '$(params.force-failure)' = true; then
                   printf 'LOCAL_SOURCE_EXPECTED_FAILURE\n'

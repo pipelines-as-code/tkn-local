@@ -197,6 +197,7 @@ type executionIdentity struct {
 }
 
 type executionContract struct {
+	OpenShift    bool
 	Group        int64
 	NodeSelector map[string]string
 	Tolerations  []corev1.Toleration

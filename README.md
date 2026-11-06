@@ -34,8 +34,9 @@ The command runs the selected PipelineRun and leaves your YAML unchanged.
 Your Pipeline must declare a workspace for the uploaded source and pass it to the
 Tasks that read your files. The workspace defaults to `source`; use `--workspace`
 for another name. Disable Git checkout so it doesn't replace your uploaded files.
-Tasks sharing the source must use the same nonzero `securityContext.fsGroup` in
-their Pod templates. See [examples/local.yaml](examples/local.yaml).
+The command configures shared workspace permissions automatically, using the
+namespace's assigned IDs on OpenShift. Explicit user and group settings must be
+compatible with the namespace policy. See [examples/local.yaml](examples/local.yaml).
 
 Set Tekton string parameters with `-p`:
 
@@ -47,6 +48,26 @@ Each run includes tracked files and untracked files allowed by Git ignore rules.
 Git metadata is excluded. Symlinks and submodules are unsupported. Task and
 Pipeline references must resolve from local definitions; remote resolvers and
 Custom Tasks are unsupported.
+
+## Use the same PipelineRun in CI
+
+[examples/git-or-local.yaml](examples/git-or-local.yaml) checks out Git by
+default. Run it normally with:
+
+```sh
+kubectl create -f examples/git-or-local.yaml
+```
+
+Use your local files with the same PipelineRun:
+
+```sh
+tkn local run --pipeline examples/git-or-local.yaml -p local=true
+```
+
+The `local` parameter skips the `git-clone` Task. Subsequent Tasks read the
+`source` workspace in both modes. Set `url` and `revision` for your repository.
+Tasks that consume checkout results, such as a commit SHA, need another source
+for those values when checkout is skipped.
 
 ## Debug
 
