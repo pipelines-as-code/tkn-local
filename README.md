@@ -56,23 +56,24 @@ the checkout results needed by later Tasks. Source checkout needs no Git-server
 access.
 
 ```mermaid
+%%{init: {"htmlLabels": false, "flowchart": {"wrappingWidth": 240}}}%%
 flowchart TD
     subgraph computer["On your computer"]
-        command["Run tkn local run -f pipeline.yaml"]
-        collect["Read instructions<br/>Collect files and uncommitted edits"]
-        checkout{"Choose the source checkout task"}
-        explicit["Use the task named by --checkout-task"]
-        automatic["Recognize a dedicated git-clone task"]
-        copy["Copy the PipelineRun<br/>Use local files instead of checkout"]
-        checks["Check access, storage and pipeline support<br/>Show run target"]
-        confirm{"Do you confirm the run?"}
+        command["Run tkn local run<br/>with your pipeline file"]
+        collect["Collect your files<br/>including local edits"]
+        checkout{"Source checkout?"}
+        explicit["Select the task with<br/>--checkout-task"]
+        automatic["Find the dedicated<br/>git-clone task"]
+        copy["Copy the PipelineRun<br/>Use uploaded source"]
+        checks["Check access and storage<br/>Show where tasks will run"]
+        confirm{"Start this run?"}
         stop["Stop before uploading<br/>Explain what needs fixing"]
         decline["Exit without uploading"]
 
         command --> collect --> checkout
-        checkout -- "Flag supplied" --> explicit
-        checkout -- "Automatic detection" --> automatic
-        checkout -- "No checkout task" --> copy
+        checkout -- "Override" --> explicit
+        checkout -- "Detect" --> automatic
+        checkout -- "None" --> copy
         explicit --> copy
         automatic --> copy
         copy --> checks --> confirm
@@ -80,19 +81,19 @@ flowchart TD
         confirm -- "No" --> decline
     end
 
-    subgraph cluster["On your Kubernetes or OpenShift cluster"]
-        storage["Create temporary storage<br/>Keep the pipeline paused"]
-        upload["Upload the collected files<br/>to the shared source folder"]
-        start["Start the pipeline<br/>Supply checkout results if needed"]
-        tasks["Run the build and test tasks<br/>Stream their logs to your terminal"]
-        result["Report success or failure<br/>Ctrl+C cancels unfinished work"]
+    subgraph cluster["On your cluster"]
+        storage["Create temporary storage<br/>Pause the pipeline"]
+        upload["Upload your files<br/>to the shared folder"]
+        start["Start the pipeline<br/>Provide checkout results"]
+        tasks["Run builds and tests<br/>Show logs in your terminal"]
+        result["Show the result<br/>or handle cancellation"]
 
         storage --> upload --> start --> tasks --> result
     end
 
     confirm -- "Yes, or --yes" --> storage
-    result --> keep{"Did you use --keep-resources?"}
-    keep -- "No" --> cleanup["Remove the run and temporary source storage"]
+    result --> keep{"Keep resources with<br/>--keep-resources?"}
+    keep -- "No" --> cleanup["Remove the run<br/>and temporary storage"]
     keep -- "Yes" --> inspect["Keep run and source<br/>Print cleanup commands"]
 ```
 
