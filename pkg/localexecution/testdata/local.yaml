@@ -1,0 +1,94 @@
+apiVersion: tekton.dev/v1
+kind: PipelineRun
+metadata:
+  name: local-source-check
+spec:
+  taskRunTemplate:
+    serviceAccountName: default
+    podTemplate:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        fsGroup: 65532
+  taskRunSpecs:
+    - pipelineTaskName: verify-shared-source
+      podTemplate:
+        securityContext:
+          runAsNonRoot: true
+          runAsUser: 65533
+          runAsGroup: 65532
+          fsGroup: 65532
+  pipelineSpec:
+    params:
+      - name: expected-tracked
+        type: string
+      - name: expected-untracked
+        type: string
+      - name: force-failure
+        type: string
+    workspaces:
+      - name: source
+    tasks:
+      - name: inspect-source
+        params:
+          - name: expected-tracked
+            value: $(params.expected-tracked)
+          - name: expected-untracked
+            value: $(params.expected-untracked)
+        workspaces:
+          - name: source
+            workspace: source
+        taskSpec:
+          params:
+            - name: expected-tracked
+              type: string
+            - name: expected-untracked
+              type: string
+          workspaces:
+            - name: source
+          steps:
+            - name: inspect
+              image: docker.io/library/busybox:1.37.0@sha256:a7dbc319b1438115a207e11930dc4bb3e643dcb3ec0bdd694bb36cd8fad289ec
+              script: |
+                #!/bin/sh
+                set -eu
+                cd "$(workspaces.source.path)"
+                printf '%s  %s\n' '$(params.expected-tracked)' local-input.txt | sha256sum -c -
+                printf '%s  %s\n' '$(params.expected-untracked)' local-untracked.txt | sha256sum -c -
+                test ! -e .git
+                test ! -e local-deleted.txt
+                test ! -e local-ignored.txt
+                test -x local-executable.sh
+                ./local-executable.sh
+                umask 0002
+                printf 'shared source\n' > local-marker.txt
+      - name: verify-shared-source
+        runAfter:
+          - inspect-source
+        params:
+          - name: force-failure
+            value: $(params.force-failure)
+        workspaces:
+          - name: source
+            workspace: source
+        taskSpec:
+          params:
+            - name: force-failure
+              type: string
+          workspaces:
+            - name: source
+          steps:
+            - name: read-and-write
+              image: docker.io/library/busybox:1.37.0@sha256:a7dbc319b1438115a207e11930dc4bb3e643dcb3ec0bdd694bb36cd8fad289ec
+              script: |
+                #!/bin/sh
+                set -eu
+                cd "$(workspaces.source.path)"
+                grep -q '^shared source$' local-marker.txt
+                printf 'second UID wrote successfully\n' >> local-marker.txt
+                printf 'LOCAL_SOURCE_VERIFIED\n'
+                if test '$(params.force-failure)' = true; then
+                  printf 'LOCAL_SOURCE_EXPECTED_FAILURE\n'
+                  exit 1
+                fi

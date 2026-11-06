@@ -1,0 +1,42 @@
+apiVersion: tekton.dev/v1
+kind: PipelineRun
+metadata:
+  generateName: local-example-
+spec:
+  taskRunTemplate:
+    podTemplate:
+      securityContext:
+        fsGroup: 65532
+  pipelineSpec:
+    params:
+      - name: message
+        type: string
+        default: hello
+    workspaces:
+      - name: source
+    tasks:
+      - name: inspect-source
+        params:
+          - name: message
+            value: $(params.message)
+        workspaces:
+          - name: source
+            workspace: source
+        taskSpec:
+          params:
+            - name: message
+              type: string
+          workspaces:
+            - name: source
+          steps:
+            - name: inspect
+              image: docker.io/library/busybox:1.37.0@sha256:a7dbc319b1438115a207e11930dc4bb3e643dcb3ec0bdd694bb36cd8fad289ec
+              env:
+                - name: MESSAGE
+                  value: $(params.message)
+              script: |
+                #!/bin/sh
+                set -eu
+                printf '%s\n' "$MESSAGE"
+                cd "$(workspaces.source.path)"
+                ls -la
