@@ -7,7 +7,7 @@ test:
 	go test -race ./...
 
 e2e:
-	go test -tags=e2e -v -timeout=10m ./test/e2e
+	go test -tags=e2e -v -timeout=15m ./test/e2e
 
 fmt:
 	gofumpt -w -extra cmd internal pkg test

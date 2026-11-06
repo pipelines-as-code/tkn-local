@@ -130,7 +130,7 @@ func observePods(t *testing.T, clients *cluster.Clients, namespace string) func(
 	}
 }
 
-func assertRestrictedPods(t *testing.T, observed []corev1.Pod, run string, namespace *corev1.Namespace) {
+func assertRestrictedPods(t *testing.T, observed []corev1.Pod, run string, namespace *corev1.Namespace, wantUploader, wantTasks int) {
 	t.Helper()
 	uploader, tasks := 0, 0
 	for _, pod := range observed {
@@ -162,6 +162,6 @@ func assertRestrictedPods(t *testing.T, observed []corev1.Pod, run string, names
 			assert.Assert(t, label != nil && label.Level == namespace.Annotations["openshift.io/sa.scc.mcs"], "Pod %s has incompatible SELinux labels", pod.Name)
 		}
 	}
-	assert.Equal(t, 1, uploader)
-	assert.Assert(t, tasks >= 2, "expected both source-consuming Task Pods")
+	assert.Equal(t, wantUploader, uploader)
+	assert.Equal(t, wantTasks, tasks)
 }

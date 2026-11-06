@@ -15,13 +15,13 @@ func TestRunInputValidation(t *testing.T) {
 		args    []string
 		wantErr string
 	}{
-		{name: "missing pipeline", args: []string{"run"}, wantErr: "--pipeline is required"},
-		{name: "context and namespace optional", args: []string{"run", "--pipeline", "p.yaml"}, wantErr: "requires --yes"},
-		{name: "explicit target overrides accepted", args: []string{"run", "--pipeline", "p.yaml", "--context", "dev-context", "-n", "dev"}, wantErr: "requires --yes"},
-		{name: "noninteractive acknowledgement required", args: []string{"run", "--pipeline", "p.yaml", "-n", "dev"}, wantErr: "requires --yes"},
-		{name: "invalid size", args: []string{"run", "--pipeline", "p.yaml", "-n", "dev", "--storage-size", "bad"}, wantErr: "storage quantity"},
-		{name: "invalid timeout", args: []string{"run", "--pipeline", "p.yaml", "-n", "dev", "--timeout", "0"}, wantErr: "must be positive"},
-		{name: "malformed parameter", args: []string{"run", "--pipeline", "p.yaml", "-n", "dev", "-p", "bad"}, wantErr: "expected key=value"},
+		{name: "missing file", args: []string{"run"}, wantErr: "--file is required"},
+		{name: "context and namespace optional", args: []string{"run", "--file", "p.yaml"}, wantErr: "requires --yes"},
+		{name: "explicit target overrides accepted", args: []string{"run", "--file", "p.yaml", "--context", "dev-context", "-n", "dev"}, wantErr: "requires --yes"},
+		{name: "short file flag accepted", args: []string{"run", "-f", "p.yaml", "-n", "dev"}, wantErr: "requires --yes"},
+		{name: "invalid size", args: []string{"run", "--file", "p.yaml", "-n", "dev", "--storage-size", "bad"}, wantErr: "storage quantity"},
+		{name: "invalid timeout", args: []string{"run", "--file", "p.yaml", "-n", "dev", "--timeout", "0"}, wantErr: "must be positive"},
+		{name: "malformed parameter", args: []string{"run", "--file", "p.yaml", "-n", "dev", "-p", "bad"}, wantErr: "expected key=value"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

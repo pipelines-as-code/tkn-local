@@ -64,6 +64,7 @@ spec:
               script: |
                 #!/bin/sh
                 set -eu
+                git config --global --add safe.directory "$(workspaces.source.path)"
                 git init .
                 git fetch --depth=1 -- "$URL" "$REVISION"
                 git checkout --detach FETCH_HEAD

@@ -17,7 +17,6 @@ import (
 	"time"
 
 	"github.com/pipelines-as-code/tkn-local/internal/cluster"
-	"github.com/pipelines-as-code/tkn-local/pkg/localexecution"
 	tektonpod "github.com/tektoncd/pipeline/pkg/apis/pipeline/pod"
 	tektonv1 "github.com/tektoncd/pipeline/pkg/apis/pipeline/v1"
 	"gotest.tools/v3/assert"
@@ -63,6 +62,10 @@ func TestLocalRun(t *testing.T) {
 	assert.NilError(t, os.MkdirAll(filepath.Join(source, ".tekton"), 0o700))
 	fixture, err := os.ReadFile(filepath.Join(project, "pkg/localexecution/testdata/local.yaml"))
 	assert.NilError(t, err)
+	sharedFixture, err := os.ReadFile(filepath.Join(project, "examples/git-or-local.yaml"))
+	assert.NilError(t, err)
+	runner, err := cluster.New(&cluster.Options{Kubeconfig: configPath})
+	assert.NilError(t, err)
 	write := func(name, text string, mode os.FileMode) {
 		t.Helper()
 		assert.NilError(t, os.WriteFile(filepath.Join(source, name), []byte(text), mode))
@@ -96,17 +99,27 @@ func TestLocalRun(t *testing.T) {
 		keep        bool
 		distinctUID bool
 		interrupt   bool
+		shared      bool
+		git         bool
+		reject      bool
 	}{
 		{name: "success"},
 		{name: "failure", fail: true},
 		{name: "keep resources", keep: true},
 		{name: "distinct users", distinctUID: true},
 		{name: "cancel without finally", interrupt: true, keep: true},
+		{name: "shared PipelineRun local", shared: true},
+		{name: "shared PipelineRun Git", shared: true, git: true},
+		{name: "enabled checkout rejected", shared: true, reject: true},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			pr := &tektonv1.PipelineRun{}
-			assert.NilError(t, yaml.Unmarshal(fixture, pr))
+			definition := fixture
+			if tt.shared {
+				definition = sharedFixture
+			}
+			assert.NilError(t, yaml.Unmarshal(definition, pr))
 			var firstUID int64 = 1000
 			if openShift {
 				value, _, _ := strings.Cut(namespace.Annotations["openshift.io/sa.scc.uid-range"], "/")
@@ -127,10 +140,18 @@ func TestLocalRun(t *testing.T) {
 			assert.NilError(t, err)
 			write(".tekton/local.yaml", string(definition), 0o600)
 			args := []string{
-				"local", "run", "--pipeline", ".tekton/local.yaml", "--yes", "--timeout", "90s",
-				"-p", fmt.Sprintf("expected-tracked=%x", sha256.Sum256([]byte("dirty working tree\n"))),
-				"-p", fmt.Sprintf("expected-untracked=%x", sha256.Sum256([]byte("untracked source\n"))),
-				"-p", fmt.Sprintf("force-failure=%t", tt.fail),
+				"local", "run", "--file", ".tekton/local.yaml", "--yes", "--timeout", "90s",
+			}
+			if tt.shared {
+				args[2] = "-f"
+				if !tt.reject {
+					args = append(args, "-p", "local=true")
+				}
+			} else {
+				args = append(args,
+					"-p", fmt.Sprintf("expected-tracked=%x", sha256.Sum256([]byte("dirty working tree\n"))),
+					"-p", fmt.Sprintf("expected-untracked=%x", sha256.Sum256([]byte("untracked source\n"))),
+					"-p", fmt.Sprintf("force-failure=%t", tt.fail))
 			}
 			if tt.keep {
 				args = append(args, "--keep-resources")
@@ -142,7 +163,30 @@ func TestLocalRun(t *testing.T) {
 			cmd.Dir = source
 			cmd.Env = append(os.Environ(), "KUBECONFIG="+configPath, "PATH="+binaryDir+string(os.PathListSeparator)+os.Getenv("PATH"))
 			var output []byte
-			if tt.interrupt {
+			var name string
+			if tt.git {
+				pr.Namespace = namespace.Name
+				created, err := runner.Tekton.TektonV1().PipelineRuns(namespace.Name).Create(t.Context(), pr, metav1.CreateOptions{})
+				assert.NilError(t, err)
+				name = created.Name
+				t.Cleanup(func() {
+					ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+					defer cancel()
+					foreground := metav1.DeletePropagationForeground
+					err := clients.Tekton.TektonV1().PipelineRuns(namespace.Name).Delete(ctx, name, metav1.DeleteOptions{PropagationPolicy: &foreground})
+					assert.Assert(t, err == nil || apierrors.IsNotFound(err), "%v", err)
+					waitForRunCleanup(t, clients, namespace.Name, name)
+				})
+				ctx, cancel := context.WithTimeout(t.Context(), 2*time.Minute)
+				defer cancel()
+				logs := exec.CommandContext(ctx, "tkn", "pipelinerun", "logs", name, "--follow")
+				logs.Env = cmd.Env
+				output, err = logs.CombinedOutput()
+				assert.NilError(t, err, "%s", output)
+				completed, err := runner.Tekton.TektonV1().PipelineRuns(namespace.Name).Get(t.Context(), name, metav1.GetOptions{})
+				assert.NilError(t, err)
+				assert.Assert(t, completed.IsSuccessful(), "%+v\n%s", completed.Status.Conditions, output)
+			} else if tt.interrupt {
 				cmd.Path = filepath.Join(binaryDir, "tkn-local")
 				cmd.Args = append([]string{cmd.Path}, args[1:]...)
 				var buffer bytes.Buffer
@@ -172,7 +216,18 @@ func TestLocalRun(t *testing.T) {
 				output, err = cmd.CombinedOutput()
 			}
 			t.Logf("%s", output)
-			if tt.interrupt {
+			if tt.reject {
+				assert.Assert(t, err != nil, "enabled checkout was accepted")
+				assert.Assert(t, strings.Contains(string(output), "performs checkout"))
+				runs, err := clients.Tekton.TektonV1().PipelineRuns(namespace.Name).List(t.Context(), metav1.ListOptions{})
+				assert.NilError(t, err)
+				claims, err := clients.Kube.CoreV1().PersistentVolumeClaims(namespace.Name).List(t.Context(), metav1.ListOptions{})
+				assert.NilError(t, err)
+				pods, err := clients.Kube.CoreV1().Pods(namespace.Name).List(t.Context(), metav1.ListOptions{})
+				assert.NilError(t, err)
+				assert.Equal(t, 0, len(runs.Items)+len(claims.Items)+len(pods.Items))
+				return
+			} else if tt.interrupt {
 				assert.Assert(t, err != nil, "interrupted command returned success")
 				assert.Assert(t, strings.Contains(string(output), "context canceled"))
 			} else if tt.fail {
@@ -181,14 +236,42 @@ func TestLocalRun(t *testing.T) {
 			} else {
 				assert.NilError(t, err)
 			}
-			if !tt.interrupt {
+			if tt.shared {
+				if tt.git {
+					assert.Assert(t, strings.Contains(string(output), "README.md"))
+					assert.Assert(t, !strings.Contains(string(output), "local-untracked.txt"))
+				} else {
+					assert.Assert(t, strings.Contains(string(output), "local-untracked.txt"))
+				}
+			} else if !tt.interrupt {
 				assert.Assert(t, strings.Contains(string(output), "LOCAL_SOURCE_VERIFIED"))
 			}
-			match := regexp.MustCompile(`Created pending PipelineRun [^/]+/(\S+)`).FindSubmatch(output)
-			assert.Equal(t, 2, len(match))
-			name := string(match[1])
+			if !tt.git {
+				match := regexp.MustCompile(`Created pending PipelineRun [^/]+/(\S+)`).FindSubmatch(output)
+				assert.Equal(t, 2, len(match))
+				name = string(match[1])
+			}
+			if tt.shared {
+				clones := 0
+				for _, pod := range observed() {
+					if pod.Labels["tekton.dev/pipelineRun"] == name && pod.Labels["tekton.dev/pipelineTask"] == "git-clone" {
+						clones++
+					}
+				}
+				wantClones := 0
+				if tt.git {
+					wantClones = 1
+				}
+				assert.Equal(t, wantClones, clones)
+			}
 			if openShift {
-				assertRestrictedPods(t, observed(), name, namespace)
+				uploader, tasks := 1, 2
+				if tt.git {
+					uploader = 0
+				} else if tt.shared {
+					tasks = 1
+				}
+				assertRestrictedPods(t, observed(), name, namespace, uploader, tasks)
 			}
 			if tt.distinctUID {
 				for _, pod := range observed() {
@@ -224,36 +307,44 @@ func TestLocalRun(t *testing.T) {
 				assert.NilError(t, err)
 				_, err = clients.Kube.CoreV1().Pods(namespace.Name).Get(t.Context(), name+"-upload", metav1.GetOptions{})
 				assert.Assert(t, apierrors.IsNotFound(err), "uploader was retained")
+			}
+			if tt.keep {
 				foreground := metav1.DeletePropagationForeground
 				assert.NilError(t, clients.Tekton.TektonV1().PipelineRuns(namespace.Name).Delete(t.Context(), name, metav1.DeleteOptions{PropagationPolicy: &foreground}))
 			}
-			ctx, cancel := context.WithTimeout(t.Context(), time.Minute)
-			defer cancel()
-			assert.NilError(t, wait.PollUntilContextCancel(ctx, time.Second, true, func(ctx context.Context) (bool, error) {
-				selector := metav1.ListOptions{LabelSelector: localexecution.RunIDLabel + "=" + name}
-				runs, err := clients.Tekton.TektonV1().PipelineRuns(namespace.Name).List(ctx, selector)
-				if err != nil {
-					return false, err
-				}
-				claims, err := clients.Kube.CoreV1().PersistentVolumeClaims(namespace.Name).List(ctx, selector)
-				if err != nil {
-					return false, err
-				}
-				pods, err := clients.Kube.CoreV1().Pods(namespace.Name).List(ctx, metav1.ListOptions{})
-				if err != nil {
-					return false, err
-				}
-				tasks, err := clients.Tekton.TektonV1().TaskRuns(namespace.Name).List(ctx, metav1.ListOptions{LabelSelector: "tekton.dev/pipelineRun=" + name})
-				if err != nil {
-					return false, err
-				}
-				for _, task := range tasks.Items {
-					if task.DeletionTimestamp == nil || !task.IsDone() {
-						return false, nil
-					}
-				}
-				return len(runs.Items)+len(claims.Items)+len(pods.Items) == 0, nil
-			}))
+			if !tt.git {
+				waitForRunCleanup(t, clients, namespace.Name, name)
+			}
 		})
 	}
+}
+
+func waitForRunCleanup(t *testing.T, clients *cluster.Clients, namespace, name string) {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+	defer cancel()
+	assert.NilError(t, wait.PollUntilContextCancel(ctx, time.Second, true, func(ctx context.Context) (bool, error) {
+		runs, err := clients.Tekton.TektonV1().PipelineRuns(namespace).List(ctx, metav1.ListOptions{})
+		if err != nil {
+			return false, err
+		}
+		claims, err := clients.Kube.CoreV1().PersistentVolumeClaims(namespace).List(ctx, metav1.ListOptions{})
+		if err != nil {
+			return false, err
+		}
+		pods, err := clients.Kube.CoreV1().Pods(namespace).List(ctx, metav1.ListOptions{})
+		if err != nil {
+			return false, err
+		}
+		tasks, err := clients.Tekton.TektonV1().TaskRuns(namespace).List(ctx, metav1.ListOptions{LabelSelector: "tekton.dev/pipelineRun=" + name})
+		if err != nil {
+			return false, err
+		}
+		for _, task := range tasks.Items {
+			if task.DeletionTimestamp == nil || !task.IsDone() {
+				return false, nil
+			}
+		}
+		return len(runs.Items)+len(claims.Items)+len(pods.Items) == 0, nil
+	}))
 }

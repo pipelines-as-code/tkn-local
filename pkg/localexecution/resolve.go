@@ -50,7 +50,7 @@ func Resolve(ctx context.Context, source *Snapshot, filename, namespace, workspa
 	}
 	selected = filepath.ToSlash(selected)
 	if !validPath(selected) {
-		return nil, fmt.Errorf("--pipeline must be inside --source")
+		return nil, fmt.Errorf("--file must be inside --source")
 	}
 	filenames := []string{selected}
 	for _, entry := range source.Files {

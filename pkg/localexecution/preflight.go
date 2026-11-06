@@ -88,11 +88,11 @@ func Prepare(ctx context.Context, clients *cluster.Clients, streams *iostreams.I
 	if err := checkStorage(ctx, clients, streams, &options); err != nil {
 		return nil, err
 	}
-	if err := checkCoscheduling(ctx, clients, options.TektonNamespace); err != nil {
-		return nil, err
-	}
 	security, err := loadSecurityDefaults(ctx, clients, options.Namespace)
 	if err != nil {
+		return nil, err
+	}
+	if err := checkCoscheduling(ctx, clients, options.TektonNamespace, security.OpenShift); err != nil {
 		return nil, err
 	}
 	id := "tkn-local-" + strings.ToLower(rand.Text()[:16])
@@ -246,14 +246,20 @@ func checkStorage(ctx context.Context, clients *cluster.Clients, streams *iostre
 	return nil
 }
 
-func checkCoscheduling(ctx context.Context, clients *cluster.Clients, namespace string) error {
+func checkCoscheduling(ctx context.Context, clients *cluster.Clients, namespace string, openShift bool) error {
 	nodes, err := clients.Kube.CoreV1().Nodes().List(ctx, metav1.ListOptions{})
 	if err == nil && len(nodes.Items) == 1 {
 		return nil
 	}
+	if namespace == "" {
+		namespace = "tekton-pipelines"
+		if openShift {
+			namespace = "openshift-pipelines"
+		}
+	}
 	config, err := clients.Kube.CoreV1().ConfigMaps(namespace).Get(ctx, "feature-flags", metav1.GetOptions{})
 	if err != nil {
-		return fmt.Errorf("cannot establish multi-node RWO scheduling: read feature-flags in --tekton-namespace %s: %w", namespace, err)
+		return fmt.Errorf("cannot establish multi-node RWO scheduling: read feature-flags in namespace %s (override with --tekton-namespace): %w", namespace, err)
 	}
 	flags, err := tektonconfig.NewFeatureFlagsFromMap(config.Data)
 	if err != nil {

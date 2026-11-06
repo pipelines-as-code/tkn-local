@@ -37,7 +37,7 @@ func New(streams *iostreams.IOStreams) *cobra.Command {
 }
 
 func runCommand(connection *cluster.Options, streams *iostreams.IOStreams) *cobra.Command {
-	var pipeline, source, workspace, storageSize string
+	var filename, source, workspace, storageSize string
 	var parameters []string
 	var yes bool
 	options := localexecution.RunOptions{}
@@ -46,8 +46,8 @@ func runCommand(connection *cluster.Options, streams *iostreams.IOStreams) *cobr
 		Short: "Upload local source and run one PipelineRun on your Tekton cluster",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) (returnErr error) {
-			if pipeline == "" {
-				return fmt.Errorf("--pipeline is required")
+			if filename == "" {
+				return fmt.Errorf("--file is required")
 			}
 			if workspace == "" {
 				return fmt.Errorf("--workspace must not be empty")
@@ -86,7 +86,7 @@ func runCommand(connection *cluster.Options, streams *iostreams.IOStreams) *cobr
 			if err != nil {
 				return err
 			}
-			prepared, err := localexecution.Resolve(prepareCtx, snapshot, pipeline, connection.Namespace, workspace, values)
+			prepared, err := localexecution.Resolve(prepareCtx, snapshot, filename, connection.Namespace, workspace, values)
 			if err != nil {
 				return err
 			}
@@ -118,14 +118,14 @@ func runCommand(connection *cluster.Options, streams *iostreams.IOStreams) *cobr
 			return execution.Run(ctx)
 		},
 	}
-	command.Flags().StringVar(&pipeline, "pipeline", "", "YAML file containing exactly one PipelineRun inside the source root")
+	command.Flags().StringVarP(&filename, "file", "f", "", "YAML file containing exactly one PipelineRun inside the source root")
 	command.Flags().StringVar(&source, "source", ".", "Git working tree root to upload")
 	command.Flags().StringVar(&workspace, "workspace", "source", "Pipeline workspace that receives local source")
 	command.Flags().StringArrayVarP(&parameters, "param", "p", nil, "Tekton string parameter key=value (repeatable)")
 	command.Flags().BoolVar(&yes, "yes", false, "Confirm source upload and task execution without prompting")
 	command.Flags().StringVar(&storageSize, "storage-size", "1Gi", "Temporary source volume capacity")
 	command.Flags().StringVar(&options.StorageClass, "storage-class", "", "StorageClass (defaults to the cluster default)")
-	command.Flags().StringVar(&options.TektonNamespace, "tekton-namespace", "tekton-pipelines", "Tekton installation namespace")
+	command.Flags().StringVar(&options.TektonNamespace, "tekton-namespace", "", "Tekton installation namespace (defaults to openshift-pipelines on OpenShift, tekton-pipelines elsewhere)")
 	command.Flags().DurationVar(&options.Timeout, "timeout", time.Hour, "Maximum pipeline execution time")
 	command.Flags().BoolVar(&options.KeepResources, "keep-resources", false, "Keep the run and uploaded source for debugging")
 	return command

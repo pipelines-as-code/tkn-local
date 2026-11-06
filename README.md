@@ -20,12 +20,15 @@ Put your Go binary directory on `PATH` to use it as a `tkn` plugin.
 From your Git working tree root:
 
 ```sh
-tkn local run --pipeline examples/local.yaml
+tkn local run --file examples/local.yaml
 ```
 
 The command uses your current kubeconfig context and namespace. `--context` and
 `--namespace/-n` are optional overrides. Use `--source` to select another working
 tree root.
+
+The Tekton installation namespace defaults to `openshift-pipelines` on OpenShift
+and `tekton-pipelines` elsewhere. Use `--tekton-namespace` for a custom install.
 
 Select a YAML file containing exactly one PipelineRun. Tasks and Pipelines can be
 inline, in the same file, or referenced by name from definitions in `.tekton`.
@@ -41,7 +44,7 @@ compatible with the namespace policy. See [examples/local.yaml](examples/local.y
 Set Tekton string parameters with `-p`:
 
 ```sh
-tkn local run --pipeline examples/local.yaml -p message=hello
+tkn local run --file examples/local.yaml -p message=hello
 ```
 
 Each run includes tracked files and untracked files allowed by Git ignore rules.
@@ -61,7 +64,7 @@ kubectl create -f examples/git-or-local.yaml
 Use your local files with the same PipelineRun:
 
 ```sh
-tkn local run --pipeline examples/git-or-local.yaml -p local=true
+tkn local run --file examples/git-or-local.yaml -p local=true
 ```
 
 The `local` parameter skips the `git-clone` Task. Subsequent Tasks read the
@@ -75,7 +78,7 @@ Press Ctrl+C to cancel. The command removes its run and temporary storage when
 finished. Keep them for inspection with:
 
 ```sh
-tkn local run --pipeline examples/local.yaml --keep-resources
+tkn local run --file examples/local.yaml --keep-resources
 ```
 
 The command prints inspection and cleanup commands. Use `--yes` to skip the
