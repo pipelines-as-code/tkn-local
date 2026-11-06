@@ -31,15 +31,16 @@ type SourceFile struct {
 }
 
 type Snapshot struct {
-	Root     string
-	Head     string
-	Dirty    bool
-	Digest   string
-	Bytes    int64
-	Files    []SourceFile
-	Deleted  []string
-	Warnings []string
-	archive  *os.File
+	Root          string
+	Head          string
+	CommitterDate string
+	Dirty         bool
+	Digest        string
+	Bytes         int64
+	Files         []SourceFile
+	Deleted       []string
+	Warnings      []string
+	archive       *os.File
 }
 
 func gitOutput(ctx context.Context, dir string, args ...string) (string, error) {
@@ -74,6 +75,10 @@ func Capture(ctx context.Context, source string, capacity int64) (_ *Snapshot, e
 	if err != nil {
 		return nil, fmt.Errorf("source needs an existing HEAD commit: %w", err)
 	}
+	committerDate, err := gitOutput(ctx, rootPath, "show", "-s", "--format=%ct", strings.TrimSpace(head))
+	if err != nil {
+		return nil, fmt.Errorf("read source commit timestamp: %w", err)
+	}
 	index, err := gitOutput(ctx, rootPath, "ls-files", "--stage", "-z")
 	if err != nil {
 		return nil, err
@@ -102,6 +107,7 @@ func Capture(ctx context.Context, source string, capacity int64) (_ *Snapshot, e
 	}
 	snap := &Snapshot{Root: rootPath, Dirty: status != "", archive: archive}
 	snap.Head = strings.TrimSpace(head)
+	snap.CommitterDate = strings.TrimSpace(committerDate)
 	defer func() {
 		if err != nil {
 			err = errors.Join(err, snap.Close())

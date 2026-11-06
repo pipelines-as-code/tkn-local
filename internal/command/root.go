@@ -37,7 +37,7 @@ func New(streams *iostreams.IOStreams) *cobra.Command {
 }
 
 func runCommand(connection *cluster.Options, streams *iostreams.IOStreams) *cobra.Command {
-	var filename, source, workspace, storageSize string
+	var filename, source, workspace, storageSize, checkoutTask string
 	var parameters []string
 	var yes bool
 	options := localexecution.RunOptions{}
@@ -86,7 +86,7 @@ func runCommand(connection *cluster.Options, streams *iostreams.IOStreams) *cobr
 			if err != nil {
 				return err
 			}
-			prepared, err := localexecution.Resolve(prepareCtx, snapshot, filename, connection.Namespace, workspace, values)
+			prepared, err := localexecution.Resolve(prepareCtx, snapshot, filename, connection.Namespace, workspace, values, checkoutTask)
 			if err != nil {
 				return err
 			}
@@ -121,6 +121,7 @@ func runCommand(connection *cluster.Options, streams *iostreams.IOStreams) *cobr
 	command.Flags().StringVarP(&filename, "file", "f", "", "YAML file containing exactly one PipelineRun inside the source root")
 	command.Flags().StringVar(&source, "source", ".", "Git working tree root to upload")
 	command.Flags().StringVar(&workspace, "workspace", "source", "Pipeline workspace that receives local source")
+	command.Flags().StringVar(&checkoutTask, "checkout-task", "", "Exact Pipeline task to replace with local source (defaults to automatic git-clone detection)")
 	command.Flags().StringArrayVarP(&parameters, "param", "p", nil, "Tekton string parameter key=value (repeatable)")
 	command.Flags().BoolVar(&yes, "yes", false, "Confirm source upload and task execution without prompting")
 	command.Flags().StringVar(&storageSize, "storage-size", "1Gi", "Temporary source volume capacity")

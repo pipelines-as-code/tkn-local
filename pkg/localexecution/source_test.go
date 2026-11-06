@@ -121,6 +121,7 @@ func TestCapture(t *testing.T) {
 				}
 			})
 			assert.Assert(t, snap.Dirty)
+			assert.Equal(t, gitTest(t, root, "show", "-s", "--format=%ct", snap.Head), snap.CommitterDate)
 			writeSource(t, root, "tracked", "changed after capture", 0o640)
 			captured, err := snap.ReadFile("tracked")
 			assert.NilError(t, err)

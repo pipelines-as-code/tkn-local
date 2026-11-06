@@ -148,7 +148,7 @@ func Prepare(ctx context.Context, clients *cluster.Clients, streams *iostreams.I
 			inspected.Spec.Workspaces[i] = tektonv1.WorkspaceBinding{Name: prepared.Workspace, EmptyDir: &corev1.EmptyDirVolumeSource{}}
 		}
 	}
-	if _, err := validatePipeline(inspected, prepared.Workspace); err != nil {
+	if _, err := validatePipeline(inspected, prepared.Workspace, prepared.checkout); err != nil {
 		return nil, fmt.Errorf("admitted PipelineRun: %w", err)
 	}
 	contract, err := admittedContract(admitted, prepared.Workspace)
@@ -356,6 +356,9 @@ func (e *Execution) Preview() {
 		host = parsed.String()
 	}
 	fmt.Fprintf(e.streams.ErrOut, "Cluster: %s\nContext: %s\nNamespace: %s\nSource: %s (%d files, %d bytes)\nWorkspace: %s\n", host, e.options.Context, e.options.Namespace, e.source.Root, len(e.source.Files), e.source.Bytes, e.prepared.Workspace)
+	if e.prepared.checkout != nil {
+		fmt.Fprintf(e.streams.ErrOut, "Using local source instead of checkout task %s\n", e.prepared.checkout.task.Name)
+	}
 	for _, identity := range e.contract.Identities {
 		fmt.Fprintf(e.streams.ErrOut, "Task %s: service account %s\n", identity.Task, identity.ServiceAccount)
 	}

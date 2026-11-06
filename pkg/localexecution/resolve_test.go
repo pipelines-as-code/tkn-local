@@ -38,14 +38,19 @@ spec:
 func TestResolve(t *testing.T) {
 	fixture, err := os.ReadFile("testdata/local.yaml")
 	assert.NilError(t, err)
+	shared, err := os.ReadFile("../../examples/git-or-local.yaml")
+	assert.NilError(t, err)
 	tests := []struct {
 		name     string
 		pipeline string
 		sibling  string
 		params   map[string]string
 		wantErr  string
+		replaced bool
 	}{
 		{name: "inline", pipeline: testPipeline},
+		{name: "shared example", pipeline: string(shared), replaced: true},
+		{name: "resolved checkout identity", pipeline: strings.Split(testPipeline, "        taskSpec:")[0] + "        taskRef:\n          name: git-clone\n", sibling: strings.ReplaceAll(strings.ReplaceAll(testTask, "name: read", "name: git-clone"), "- name: git-clone", "- name: clone"), replaced: true},
 		{name: "v1beta1 conversion", pipeline: strings.Replace(strings.Replace(testPipeline, "tekton.dev/v1", "tekton.dev/v1beta1", 1), "  taskRunTemplate:\n    podTemplate:\n      securityContext:\n        fsGroup: 65532", "  podTemplate:\n    securityContext:\n      fsGroup: 65532", 1)},
 		{name: "e2e fixture", pipeline: string(fixture), params: map[string]string{"expected-tracked": strings.Repeat("a", 64), "expected-untracked": strings.Repeat("b", 64), "force-failure": "false"}},
 		{name: "comment-only documents", pipeline: "# copyright\n---\n" + testPipeline + "\n---\n# empty document\n"},
@@ -73,12 +78,13 @@ func TestResolve(t *testing.T) {
 			snapshot, err := Capture(t.Context(), root, 1<<30)
 			assert.NilError(t, err)
 			defer func() { assert.NilError(t, snapshot.Close()) }()
-			prepared, err := Resolve(t.Context(), snapshot, filepath.Join(root, ".tekton/local.yaml"), "dev", "source", tt.params)
+			prepared, err := Resolve(t.Context(), snapshot, filepath.Join(root, ".tekton/local.yaml"), "dev", "source", tt.params, "")
 			if tt.wantErr != "" {
 				assert.ErrorContains(t, err, tt.wantErr)
 				return
 			}
 			assert.NilError(t, err)
+			assert.Equal(t, tt.replaced, prepared.checkout != nil)
 			assert.Equal(t, "source", prepared.Workspace)
 			assert.Equal(t, "dev", prepared.PipelineRun.Namespace)
 			assert.Assert(t, len(prepared.Definitions) > 0)
@@ -152,7 +158,7 @@ spec:
 	assert.NilError(t, err)
 	defer func() { assert.NilError(t, snapshot.Close()) }()
 	writeSource(t, root, ".tekton/read.yaml", "not the snapshot", 0o600)
-	prepared, err := Resolve(t.Context(), snapshot, filepath.Join(root, ".tekton/local.yaml"), "dev", "source", map[string]string{"message": "override"})
+	prepared, err := Resolve(t.Context(), snapshot, filepath.Join(root, ".tekton/local.yaml"), "dev", "source", map[string]string{"message": "override"}, "")
 	assert.NilError(t, err)
 	assert.Equal(t, "echo captured", prepared.PipelineRun.Spec.PipelineSpec.Tasks[0].TaskSpec.Steps[0].Script)
 	assert.Equal(t, "echo captured", prepared.PipelineRun.Spec.PipelineSpec.Finally[0].TaskSpec.Steps[0].Script)

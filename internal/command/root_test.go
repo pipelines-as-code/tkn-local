@@ -19,6 +19,7 @@ func TestRunInputValidation(t *testing.T) {
 		{name: "context and namespace optional", args: []string{"run", "--file", "p.yaml"}, wantErr: "requires --yes"},
 		{name: "explicit target overrides accepted", args: []string{"run", "--file", "p.yaml", "--context", "dev-context", "-n", "dev"}, wantErr: "requires --yes"},
 		{name: "short file flag accepted", args: []string{"run", "-f", "p.yaml", "-n", "dev"}, wantErr: "requires --yes"},
+		{name: "checkout task override accepted", args: []string{"run", "-f", "p.yaml", "--checkout-task", "fetch-source"}, wantErr: "requires --yes"},
 		{name: "invalid size", args: []string{"run", "--file", "p.yaml", "-n", "dev", "--storage-size", "bad"}, wantErr: "storage quantity"},
 		{name: "invalid timeout", args: []string{"run", "--file", "p.yaml", "-n", "dev", "--timeout", "0"}, wantErr: "must be positive"},
 		{name: "malformed parameter", args: []string{"run", "--file", "p.yaml", "-n", "dev", "-p", "bad"}, wantErr: "expected key=value"},

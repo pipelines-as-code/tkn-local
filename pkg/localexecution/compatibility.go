@@ -16,12 +16,15 @@ func pipelineTasks(pr *tektonv1.PipelineRun) []tektonv1.PipelineTask {
 	return append(slices.Clone(pr.Spec.PipelineSpec.Tasks), pr.Spec.PipelineSpec.Finally...)
 }
 
-func validatePipeline(pr *tektonv1.PipelineRun, source string) (string, error) {
+func validatePipeline(pr *tektonv1.PipelineRun, source string, replacement *checkoutReplacement) (string, error) {
 	if source == "" {
 		return "", fmt.Errorf("--workspace must name the Pipeline workspace that receives local source")
 	}
 	if pr.Spec.PipelineRef != nil || pr.Spec.PipelineSpec == nil {
 		return "", fmt.Errorf("local execution requires a resolved inline pipelineSpec; resolver references are unsupported")
+	}
+	if err := replacement.validate(pr); err != nil {
+		return "", err
 	}
 	declared := false
 	bound := map[string]bool{}
@@ -47,15 +50,7 @@ func validatePipeline(pr *tektonv1.PipelineRun, source string) (string, error) {
 	if !declared {
 		return "", fmt.Errorf("source workspace %q is not declared by the Pipeline", source)
 	}
-	params := map[string]tektonv1.ParamValue{}
-	for _, p := range pr.Spec.PipelineSpec.Params {
-		if p.Default != nil {
-			params[p.Name] = *p.Default
-		}
-	}
-	for _, p := range pr.Spec.Params {
-		params[p.Name] = p.Value
-	}
+	params := pipelineParams(pr)
 	for _, p := range pr.Spec.PipelineSpec.Params {
 		if _, ok := params[p.Name]; !ok {
 			return "", fmt.Errorf("required Pipeline parameter %q is missing", p.Name)
@@ -107,17 +102,14 @@ func validatePipeline(pr *tektonv1.PipelineRun, source string) (string, error) {
 				return "", fmt.Errorf("task %q requires workspace mapping %q", task.Name, w.Name)
 			}
 		}
-		checkout := strings.Contains(task.Name, "git-clone")
 		for _, step := range ts.Steps {
 			if step.Ref != nil {
 				return "", fmt.Errorf("task %q uses a StepAction reference, which is unsupported", task.Name)
 			}
-			script := step.Script + " " + strings.Join(step.Command, " ")
-			checkout = checkout || strings.Contains(script, "git clone") || strings.Contains(script, "git-init") || strings.Contains(step.Image, "git-init")
 		}
-		if checkout {
+		if sourceConsumer(task, source) && suspectedCheckout(task) && (replacement == nil || task.Name != replacement.task.Name) {
 			if !definitelySkipped(task, params) {
-				return "", fmt.Errorf("task %q performs checkout; use a dedicated local PipelineRun or an author-owned when gate that disables it", task.Name)
+				return "", fmt.Errorf("task %q performs checkout; identify a dedicated source task with --checkout-task %s", task.Name, task.Name)
 			}
 			if strings.Contains(string(data), "$(tasks."+task.Name+".results.") || strings.Contains(string(data), "$(finally."+task.Name+".results.") {
 				return "", fmt.Errorf("task %q is a skipped checkout with consumed results; provide an author-owned local alternative", task.Name)

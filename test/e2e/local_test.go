@@ -102,15 +102,19 @@ func TestLocalRun(t *testing.T) {
 		shared      bool
 		git         bool
 		reject      bool
+		override    bool
+		results     bool
 	}{
+		{name: "shared PipelineRun local", shared: true},
+		{name: "checkout results", shared: true, results: true},
+		{name: "custom checkout override", shared: true, results: true, override: true},
+		{name: "shared PipelineRun Git", shared: true, git: true},
 		{name: "success"},
 		{name: "failure", fail: true},
 		{name: "keep resources", keep: true},
 		{name: "distinct users", distinctUID: true},
 		{name: "cancel without finally", interrupt: true, keep: true},
-		{name: "shared PipelineRun local", shared: true},
-		{name: "shared PipelineRun Git", shared: true, git: true},
-		{name: "enabled checkout rejected", shared: true, reject: true},
+		{name: "additional checkout rejected", shared: true, reject: true},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -120,6 +124,43 @@ func TestLocalRun(t *testing.T) {
 				definition = sharedFixture
 			}
 			assert.NilError(t, yaml.Unmarshal(definition, pr))
+			checkoutName := "git-clone"
+			if tt.override {
+				checkoutName = "fetch-source"
+				pr.Spec.PipelineSpec.Tasks[0].Name = checkoutName
+				pr.Spec.PipelineSpec.Tasks[1].RunAfter = []string{checkoutName}
+				pr.Spec.PipelineSpec.Tasks[0].TaskSpec.Steps[0].Name = "custom-checkout"
+			}
+			if tt.results {
+				pr.Spec.PipelineSpec.Tasks[0].TaskSpec.Results = []tektonv1.TaskResult{{Name: "commit"}, {Name: "url"}, {Name: "committer-date"}}
+				inspect := &pr.Spec.PipelineSpec.Tasks[1]
+				for _, name := range []string{"commit", "url", "committer-date"} {
+					inspect.TaskSpec.Params = append(inspect.TaskSpec.Params, tektonv1.ParamSpec{Name: name, Type: tektonv1.ParamTypeString})
+					inspect.Params = append(inspect.Params, tektonv1.Param{Name: name, Value: tektonv1.ParamValue{Type: tektonv1.ParamTypeString, StringVal: "$(tasks." + checkoutName + ".results." + name + ")"}})
+				}
+				step := &inspect.TaskSpec.Steps[0]
+				head := exec.CommandContext(t.Context(), "git", "rev-parse", "HEAD")
+				head.Dir = source
+				headOutput, err := head.Output()
+				assert.NilError(t, err)
+				date := exec.CommandContext(t.Context(), "git", "show", "-s", "--format=%ct", strings.TrimSpace(string(headOutput)))
+				date.Dir = source
+				dateOutput, err := date.Output()
+				assert.NilError(t, err)
+				step.Env = []corev1.EnvVar{
+					{Name: "COMMIT", Value: "$(params.commit)"},
+					{Name: "EXPECTED_COMMIT", Value: strings.TrimSpace(string(headOutput))},
+					{Name: "URL", Value: "$(params.url)"},
+					{Name: "COMMITTER_DATE", Value: "$(params.committer-date)"},
+					{Name: "EXPECTED_DATE", Value: strings.TrimSpace(string(dateOutput))},
+				}
+				step.Script += "test \"$COMMIT\" = \"$EXPECTED_COMMIT\"\ntest \"$URL\" = 'https://127.0.0.1:1/unreachable'\ntest \"$COMMITTER_DATE\" = \"$EXPECTED_DATE\"\ntest ! -e .git\necho LOCAL_CHECKOUT_RESULTS_VERIFIED\n"
+			}
+			if tt.reject {
+				extra := pr.Spec.PipelineSpec.Tasks[0].DeepCopy()
+				extra.Name = "git-clone-extra"
+				pr.Spec.PipelineSpec.Tasks = append(pr.Spec.PipelineSpec.Tasks, *extra)
+			}
 			var firstUID int64 = 1000
 			if openShift {
 				value, _, _ := strings.Cut(namespace.Annotations["openshift.io/sa.scc.uid-range"], "/")
@@ -144,8 +185,11 @@ func TestLocalRun(t *testing.T) {
 			}
 			if tt.shared {
 				args[2] = "-f"
-				if !tt.reject {
-					args = append(args, "-p", "local=true")
+				if tt.results {
+					args = append(args, "-p", "url=https://127.0.0.1:1/unreachable")
+				}
+				if tt.override {
+					args = append(args, "--checkout-task", checkoutName)
 				}
 			} else {
 				args = append(args,
@@ -216,8 +260,11 @@ func TestLocalRun(t *testing.T) {
 				output, err = cmd.CombinedOutput()
 			}
 			t.Logf("%s", output)
+			unchanged, readErr := os.ReadFile(filepath.Join(source, ".tekton/local.yaml"))
+			assert.NilError(t, readErr)
+			assert.Equal(t, string(definition), string(unchanged))
 			if tt.reject {
-				assert.Assert(t, err != nil, "enabled checkout was accepted")
+				assert.Assert(t, err != nil, "additional checkout was accepted")
 				assert.Assert(t, strings.Contains(string(output), "performs checkout"))
 				runs, err := clients.Tekton.TektonV1().PipelineRuns(namespace.Name).List(t.Context(), metav1.ListOptions{})
 				assert.NilError(t, err)
@@ -237,6 +284,9 @@ func TestLocalRun(t *testing.T) {
 				assert.NilError(t, err)
 			}
 			if tt.shared {
+				if tt.results {
+					assert.Assert(t, strings.Contains(string(output), "LOCAL_CHECKOUT_RESULTS_VERIFIED"))
+				}
 				if tt.git {
 					assert.Assert(t, strings.Contains(string(output), "README.md"))
 					assert.Assert(t, !strings.Contains(string(output), "local-untracked.txt"))
@@ -254,22 +304,28 @@ func TestLocalRun(t *testing.T) {
 			if tt.shared {
 				clones := 0
 				for _, pod := range observed() {
-					if pod.Labels["tekton.dev/pipelineRun"] == name && pod.Labels["tekton.dev/pipelineTask"] == "git-clone" {
+					if pod.Labels["tekton.dev/pipelineRun"] == name && pod.Labels["tekton.dev/pipelineTask"] == checkoutName {
 						clones++
+						wantStep := "step-local-source"
+						if tt.git {
+							wantStep = "step-clone"
+						}
+						foundStep := false
+						for _, container := range pod.Spec.Containers {
+							if strings.HasPrefix(container.Name, "step-") {
+								assert.Equal(t, wantStep, container.Name)
+								foundStep = true
+							}
+						}
+						assert.Assert(t, foundStep, "checkout Pod had no expected step")
 					}
 				}
-				wantClones := 0
-				if tt.git {
-					wantClones = 1
-				}
-				assert.Equal(t, wantClones, clones)
+				assert.Equal(t, 1, clones)
 			}
 			if openShift {
 				uploader, tasks := 1, 2
 				if tt.git {
 					uploader = 0
-				} else if tt.shared {
-					tasks = 1
 				}
 				assertRestrictedPods(t, observed(), name, namespace, uploader, tasks)
 			}

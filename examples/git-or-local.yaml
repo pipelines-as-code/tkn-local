@@ -16,9 +16,6 @@ spec:
               storage: 1Gi
   pipelineSpec:
     params:
-      - name: local
-        type: string
-        default: "false"
       - name: url
         type: string
         default: https://github.com/pipelines-as-code/tkn-local.git
@@ -29,11 +26,6 @@ spec:
       - name: source
     tasks:
       - name: git-clone
-        when:
-          - input: $(params.local)
-            operator: in
-            values:
-              - "false"
         params:
           - name: url
             value: $(params.url)

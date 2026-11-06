@@ -37,9 +37,10 @@ type Prepared struct {
 	PipelineRun *tektonv1.PipelineRun
 	Workspace   string
 	Definitions []Definition
+	checkout    *checkoutReplacement
 }
 
-func Resolve(ctx context.Context, source *Snapshot, filename, namespace, workspace string, inputs map[string]string) (*Prepared, error) {
+func Resolve(ctx context.Context, source *Snapshot, filename, namespace, workspace string, inputs map[string]string, checkoutTask string) (*Prepared, error) {
 	absolute, err := filepath.Abs(filename)
 	if err != nil {
 		return nil, err
@@ -127,6 +128,7 @@ func Resolve(ctx context.Context, source *Snapshot, filename, namespace, workspa
 	if pr.Spec.PipelineSpec == nil {
 		return nil, fmt.Errorf("PipelineRun must declare pipelineSpec or pipelineRef")
 	}
+	knownCheckouts := map[string]bool{}
 	for _, group := range [][]tektonv1.PipelineTask{pr.Spec.PipelineSpec.Tasks, pr.Spec.PipelineSpec.Finally} {
 		for i := range group {
 			task := &group[i]
@@ -138,6 +140,7 @@ func Resolve(ctx context.Context, source *Snapshot, filename, namespace, workspa
 				return nil, fmt.Errorf("taskRef %q must name an ordinary Task in the selected file or .tekton", ref.Name)
 			}
 			definition := tasks[ref.Name]
+			knownCheckouts[task.Name] = ref.Name == "git-clone"
 			task.TaskSpec = &tektonv1.EmbeddedTask{TaskSpec: *definition.Spec.DeepCopy(), Metadata: tektonv1.PipelineTaskMetadata{Labels: definition.Labels, Annotations: definition.Annotations}}
 			task.TaskRef = nil
 		}
@@ -161,7 +164,11 @@ func Resolve(ctx context.Context, source *Snapshot, filename, namespace, workspa
 			pr.Spec.Params = append(pr.Spec.Params, param)
 		}
 	}
-	if _, err := validatePipeline(pr, workspace); err != nil {
+	prepared.checkout, err = replaceCheckout(pr, source, workspace, checkoutTask, knownCheckouts)
+	if err != nil {
+		return nil, err
+	}
+	if _, err := validatePipeline(pr, workspace, prepared.checkout); err != nil {
 		return nil, err
 	}
 	pr.Namespace = namespace

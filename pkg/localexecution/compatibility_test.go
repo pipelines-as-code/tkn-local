@@ -54,7 +54,7 @@ func TestPipelineCompatibility(t *testing.T) {
 			pr := &tektonv1.PipelineRun{}
 			assert.NilError(t, yaml.Unmarshal([]byte(testPipeline), pr))
 			tt.setup(pr)
-			_, err := validatePipeline(pr, "source")
+			_, err := validatePipeline(pr, "source", nil)
 			if tt.wantErr != "" {
 				assert.ErrorContains(t, err, tt.wantErr)
 			} else {
